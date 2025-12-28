@@ -8,6 +8,7 @@ import time
 import traceback
 
 import torch
+import numpy as np
 import torch.nn as nn
 from funasr import AutoModel
 from funasr.metrics.compute_acc import compute_accuracy
@@ -570,7 +571,7 @@ class FunASRNano(nn.Module):
                         {"role": "assistant", "content": "null"},
                     ]
                 )
-            elif isinstance(data, torch.Tensor):
+            elif isinstance(data, (torch.Tensor, np.ndarray)):
                 new_data_in.append(
                     [
                         {"role": "system", "content": "You are a helpful assistant."},

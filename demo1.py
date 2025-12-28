@@ -1,5 +1,6 @@
 import torch
 from funasr import AutoModel
+import librosa
 
 
 def main():
@@ -42,6 +43,11 @@ def main():
         device=device,
     )
     res = model.generate(input=[wav_path], cache={}, batch_size=1)
+    text = res[0]["text"]
+    print(text)
+
+    audio, fs = librosa.load(wav_path, sr=16000)
+    res = model.generate(input=[audio], cache={}, batch_size=1)
     text = res[0]["text"]
     print(text)
 
