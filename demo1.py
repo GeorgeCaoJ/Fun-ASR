@@ -47,9 +47,11 @@ def main():
     print(text)
 
     audio, fs = librosa.load(wav_path, sr=16000)
-    res = model.generate(input=[audio], cache={}, batch_size=1)
+    res = model.generate(input=[audio], cache={}, batch_size=1, timestamp=True)
     text = res[0]["text"]
     print(text)
+    if "timestamp" in res[0]:
+        print("Timestamp:", res[0]["timestamp"][:10], "...")  # Show first 10 timestamps
 
 
 if __name__ == "__main__":

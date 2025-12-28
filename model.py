@@ -532,6 +532,82 @@ class FunASRNano(nn.Module):
                     speech_idx += 1
         return inputs_embeds, contents, batch, source_ids, meta_data
 
+    def _predict_timestamp(self, meta_data: dict, text: str, kwargs: dict):
+        """
+        Predict timestamps for transcribed text using TP-Aligner (fa-zh) model.
+        
+        Args:
+            meta_data: Contains audio_adaptor_out and other audio info
+            text: The transcribed text (without punctuation)
+            kwargs: Additional parameters including device info
+            
+        Returns:
+            List of [start_ms, end_ms] timestamps for each character
+        """
+        import tempfile
+        import os
+        
+        try:
+            # Initialize TP-Aligner model if not already done
+            if not hasattr(self, '_tp_model'):
+                from funasr import AutoModel
+                self._tp_model = AutoModel(
+                    model="fa-zh",
+                    disable_update=True,
+                    device=kwargs.get("device", "cpu")
+                )
+            
+            # Get the original audio data from kwargs or meta_data
+            # We need to save audio to a temp file for TP-Aligner
+            audio_data = kwargs.get("_original_audio")
+            if audio_data is None:
+                logging.warning("No audio data available for timestamp prediction")
+                return []
+            
+            # Create a temporary wav file for TP-Aligner
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+                tmp_wav_path = tmp_file.name
+                
+                # Save audio data to wav file
+                import soundfile as sf
+                if isinstance(audio_data, np.ndarray):
+                    sf.write(tmp_wav_path, audio_data, 16000)
+                elif isinstance(audio_data, torch.Tensor):
+                    sf.write(tmp_wav_path, audio_data.cpu().numpy(), 16000)
+                else:
+                    # audio_data is a file path
+                    import shutil
+                    shutil.copy(audio_data, tmp_wav_path)
+            
+            # Create a temporary text file
+            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode='w', encoding='utf-8') as tmp_text_file:
+                tmp_text_path = tmp_text_file.name
+                # Write text with key format: key text
+                tmp_text_file.write(f"audio {text}\n")
+            
+            try:
+                # Call TP-Aligner with audio and text
+                tp_res = self._tp_model.generate(
+                    input=(tmp_wav_path, tmp_text_path),
+                    data_type=("sound", "text")
+                )
+                
+                if tp_res and len(tp_res) > 0 and "timestamp" in tp_res[0]:
+                    return tp_res[0]["timestamp"]
+                else:
+                    logging.warning("TP-Aligner returned no timestamp")
+                    return []
+            finally:
+                # Clean up temp files
+                if os.path.exists(tmp_wav_path):
+                    os.unlink(tmp_wav_path)
+                if os.path.exists(tmp_text_path):
+                    os.unlink(tmp_text_path)
+                    
+        except Exception as e:
+            logging.error(f"Timestamp prediction failed: {str(e)}, {traceback.format_exc()}")
+            return []
+
     def inference(
         self,
         data_in,
@@ -559,8 +635,11 @@ class FunASRNano(nn.Module):
         prompt += "："
 
         new_data_in = []
+        original_audio = None  # Store original audio for timestamp prediction
         for data in data_in:
             if isinstance(data, str):
+                if original_audio is None:
+                    original_audio = data  # Store file path
                 new_data_in.append(
                     [
                         {"role": "system", "content": "You are a helpful assistant."},
@@ -572,6 +651,8 @@ class FunASRNano(nn.Module):
                     ]
                 )
             elif isinstance(data, (torch.Tensor, np.ndarray)):
+                if original_audio is None:
+                    original_audio = data  # Store audio array
                 new_data_in.append(
                     [
                         {"role": "system", "content": "You are a helpful assistant."},
@@ -584,6 +665,10 @@ class FunASRNano(nn.Module):
                     ]
                 )
         data_in = new_data_in
+
+        # Store original audio for timestamp prediction
+        if kwargs.get("timestamp", False) and original_audio is not None:
+            kwargs["_original_audio"] = original_audio
 
         if key is None:
             key = []
@@ -677,6 +762,16 @@ class FunASRNano(nn.Module):
         }
         if loss is not None:
             result_i["loss"] = loss
+
+        # Timestamp prediction using TP-Aligner (fa-zh) model
+        if kwargs.get("timestamp", False):
+            timestamp_list = self._predict_timestamp(
+                meta_data=meta_data,
+                text=response_clean,
+                kwargs=kwargs,
+            )
+            result_i["timestamp"] = timestamp_list
+
         results.append(result_i)
 
         if ibest_writer is not None:
